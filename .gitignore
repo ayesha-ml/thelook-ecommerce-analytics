@@ -3,3 +3,5 @@ gcp_key.json
 __pycache__/
 .DS_Store
 *.env
+
+venv/

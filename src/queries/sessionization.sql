@@ -1,68 +1,39 @@
 -- =============================================================
--- sessionization.sql
--- Purpose: Assign session sequence numbers to user events
---          using a 30-minute inactivity timeout threshold.
+-- identity_resolution.sql
+-- Purpose: Propagate authenticated user_id to anonymous events
+--          sharing the same raw tracking cookie (session_id).
 -- Dataset: bigquery-public-data.thelook_ecommerce.events
 -- Author:  Ayesha Amer
 -- =============================================================
 
-
--- calculating the time elapsed since each user's previous event
-WITH event_gap AS (
-    SELECT
-        user_id,
-        session_id,
+WITH identity_resolution AS (
+    SELECT 
+        session_id AS raw_session_id,
         event_type,
         created_at,
-        sequence_number,
+        user_id AS raw_user_id,
+        FIRST_VALUE(user_id IGNORE NULLS) OVER(
+            PARTITION BY session_id
+            ORDER BY created_at
+            ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+        ) AS resolved_user_id,
         traffic_source,
         browser,
-        uri,
-        TIMESTAMP_DIFF(
-            created_at,
-            LAG(created_at) OVER (
-                PARTITION BY user_id
-                ORDER BY created_at ASC
-            ),
-            MINUTE
-        ) AS mins_since_last_event
+        uri
     FROM `bigquery-public-data.thelook_ecommerce.events`
-    WHERE user_id IS NOT NULL
-),
-
--- flagging the start of a ne session for each user(a new session begins when either the mins since last event is 0 
--- or gap exceeds the 30 minues inactivity threshold)
-session_boundary AS (
-    SELECT *,
-        CASE
-            WHEN mins_since_last_event IS NULL THEN 1
-            WHEN mins_since_last_event > 30    THEN 1
-            ELSE 0
-        END AS is_new_session
-    FROM event_gap
-),
-
--- converting boundary flags into a session sequence number
-assign_session_num AS (
-    SELECT *,
-        SUM(is_new_session) OVER (
-            PARTITION BY user_id
-            ORDER BY created_at ASC
-            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-        ) AS session_sequence
-    FROM session_boundary
 )
-
-SELECT
-    user_id,
-    session_id AS raw_session_id,
-    session_sequence,
+SELECT 
+    raw_session_id,
+    resolved_user_id,
+    raw_user_id,
     event_type,
     created_at,
-    mins_since_last_event,
-    is_new_session,
     traffic_source,
     browser,
-    uri
-FROM assign_session_num
-ORDER BY user_id, created_at ASC;
+    uri,
+    CASE 
+        WHEN raw_user_id IS NULL AND resolved_user_id IS NOT NULL THEN 'anonymous resolved'
+        WHEN raw_user_id IS NOT NULL THEN 'authenticated'  
+        ELSE 'anonymous unresolved'
+    END AS resolution_status
+FROM identity_resolution;

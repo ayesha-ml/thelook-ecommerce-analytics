@@ -57,3 +57,33 @@ During development, an interesting design challenge came up. The initial plan co
 Testing this on real mixed sessions uncovered a major characteristic of this specific dataset: TheLook's tracking system never lets a single `session_id` cross the anonymous-to-authenticated boundary. Every single `session_id` in the raw data is either entirely anonymous or entirely authenticated, never a mix of both. Because of how the data is generated, the identity resolution query doesn't actually have any unauthenticated rows to stitch backward.
 
 Even though the dataset doesn't trigger the stitching behavior, the module was kept exactly as it is. The SQL architecture is completely correct, computationally sound, and represents a standard data engineering pattern. On a real production clickstream where an anonymous cookie gets linked to a user profile at checkout, this exact query handles the backward propagation flawlessly. Documenting this constraint clearly in the system design shows a solid, honest understanding of data quality auditing, which makes for a great technical talking point.
+
+## Clickstream Funnel & Leakage Analytics (`events`)
+
+### Methodology & Data Grain
+
+To map the user conversion journey, the clickstream event grain (2.4M rows) was aggregated into an order-agnostic Milestone Prevalence Matrix at a strict session grain (`session_id`), yielding 682,025 unique sessions.
+
+Instead of forcing a rigid, linear timestamp sequence, which breaks down under non-linear browsing behaviors like page refreshes and multi-tabbing, the architecture evaluates the total footprint of a session. Binary flags track whether a milestone was reached at any point during the session.
+
+To isolate the exact drop-off point, a derived categorical metric named `abandonment_stage` uses top-down conditional prioritization to tag each session by the highest-intent milestone achieved before termination. The evaluation filters rows sequentially, prioritizing completed purchases first, followed by checkout entries, product views, department browsing, and home page landings.
+
+### Funnel Metrics & Diagnostic Findings
+
+The distribution analysis of milestone flags and final abandonment states yielded the following matrix:
+
+| Milestone / Stage    | Total Sessions | Traffic Exposure (% of Total) | Resulting Abandonment Stage | Share of Total Sessions (%) |
+| :------------------- | :------------- | :---------------------------- | :-------------------------- | :-------------------------- |
+| `reached_home`       | 88,179         | 12.9%                         | _Abandoned at Department_   | 0.0%                        |
+| `reached_department` | 431,551        | 63.3%                         | _Abandoned at Product_      | 0.0%                        |
+| `reached_product`    | 682,025        | 100.0%                        | **Abandoned at Cart**       | **36.6%**                   |
+| `reached_cart`       | 432,205        | 63.4%                         | **Abandoned at Checkout**   | **36.7%**                   |
+| `reached_purchase`   | 182,025        | 26.7%                         | **Completed Purchase**      | **26.7%**                   |
+
+### Data Quality & Architectural Insights
+
+1. **Inverted Funnel Anomaly:** Standard e-commerce funnels exhibit a wide-top pyramid starting at the homepage. Here, product reach sits at exactly 100.0%, while homepage traffic is captured at only 12.9%. In a production ecosystem, this pattern implies a highly optimized deep-linking or performance-marketing model where traffic completely bypasses the landing page. In this specific environment, it highlights a hardcoded constraint within the synthetic data generation engine, which mandates at least one product view per valid session.
+2. **Impact on Leakage Math:** Because a product interaction is a universal constant across all sessions, the conditional sorting logic naturally terminates before hitting lower-tier stages. Consequently, "Abandoned at Home," "Abandoned at Department," and "Bounced Immediately" mathematically resolve to 0.0%.
+3. **Primary Growth Friction Points:** Growth analytics and optimization efforts should focus entirely on the two true leakage buckets:
+   - **Cart Abandonment (36.6%):** High product interest that failed to clear the "Add to Cart" intent barrier. Points to pricing friction, missing reviews, or weak product-page layouts.
+   - **Checkout Leakage (36.7%):** High-intent users who built a cart but dropped out during the shipping configuration, account creation, or payment collection phases.

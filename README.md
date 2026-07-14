@@ -4,12 +4,6 @@ An end-to-end product analytics platform built on Google BigQuery's `thelook_eco
 
 ---
 
-## Live Dashboard
-
-[https://ayesha-ml-thelook-ecommerce-analytics-appdashboard-ouvyia.streamlit.app/]
-
----
-
 ## Architecture
 
 - BigQuery (TheLook eCommerce public dataset)
